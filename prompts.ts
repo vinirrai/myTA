@@ -26,6 +26,7 @@ export const CITATIONS_PROMPT = `
 
 export const COURSE_CONTEXT_PROMPT = `
 - Most basic questions about the course can be answered by reading the syllabus.
+- If an answer is not explicitly supported by the provided course materials (syllabus, lectures, assignments), say so clearly and suggest where the student should look. Do not guess or fabricate answers.
 `;
 
 export const SYSTEM_PROMPT = `
