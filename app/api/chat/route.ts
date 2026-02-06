@@ -10,7 +10,7 @@ import { MODEL } from "@/config";
 import { SYSTEM_PROMPT } from "@/prompts";
 import { isContentFlagged } from "@/lib/moderation";
 import { webSearch } from "./tools/web-search";
-import { vectorDatabaseSearch as vectorDatabaseSearchBase } from "./tools/search-vector-database";
+import { vectorDatabaseSearch } from "./tools/search-vector-database";
 
 export const maxDuration = 30;
 
@@ -52,12 +52,15 @@ export async function POST(req: Request) {
 
   const latestText = getLatestUserText(messages);
 
+  // --- Moderation gate (unchanged behavior) ---
   if (latestText) {
     const moderationResult = await isContentFlagged(latestText);
+
     if (moderationResult.flagged) {
       const stream = createUIMessageStream({
         execute({ writer }) {
           const textId = "moderation-denial-text";
+
           writer.write({ type: "start" });
           writer.write({ type: "text-start", id: textId });
           writer.write({
@@ -71,42 +74,29 @@ export async function POST(req: Request) {
           writer.write({ type: "finish" });
         },
       });
+
       return createUIMessageStreamResponse({ stream });
     }
   }
 
-  // --------- ROUTER (locked retrieval mode) ----------
+  // --------- ROUTER (instruction-based; hard guardrails are in lib/pinecone.ts) ----------
   const mode = isLogisticsQuery(latestText) ? "logistics" : "content";
 
-  // We will enforce these filters inside the vector tool
-  const lockedFilter =
-    mode === "logistics"
-      ? {
-          // ONLY overview/logistics docs (we’ll finalize exact source_name after you confirm it)
-          // Example: { source_name: { $eq: "MBA742_Overview" }, chunk_type: { $eq: "text" } }
-          mode,
-        }
-      : {
-          // ONLY class materials
-          // Example: { source_name: { $startsWith: "Ringel_MBA742_Class" }, chunk_type: { $eq: "text" } }
-          mode,
-        };
-
-  // Wrap the tool so the model cannot override your filters
-  const vectorDatabaseSearch = (args: any) =>
-    vectorDatabaseSearchBase({ ...args, lockedFilter });
+  // NOTE: Replace this with your real Overview source_name once ingested.
+  const OVERVIEW_SOURCE_NAME = "MBA742_Overview";
 
   const dynamicSystem = `
 RETRIEVAL MODE: ${mode}
 
-CITATION RULES:
-- For slide answers: cite as "Slide <order> (<source_name>)" and use the slide image URL.
-- Show slide images inline using Markdown image syntax: ![](SLIDE_URL)
-- Never guess slide content. If slide text is missing, say you don't have slide text.
+TOOL USAGE (MANDATORY):
+- Always call vectorDatabaseSearch before answering.
+- For content questions: call vectorDatabaseSearch with {"query": "...", "chunk_type": "text"}.
+- For logistics questions: call vectorDatabaseSearch with {"query": "...", "chunk_type": "text", "source_name": "${OVERVIEW_SOURCE_NAME}"}.
 
-DISPLAY RULES:
-- Max 3 slide images per answer.
-- For logistics questions, use ONLY the Overview source and cite it.
+CITATIONS:
+- For slide answers: cite as "Slide <order> (<source_name>)" and include the slide image URL.
+- Do not guess slide content. If slide text is missing, say you don't have it.
+- Show up to 3 slide images inline using Markdown image syntax: ![](SLIDE_URL)
 `.trim();
 
   const result = streamText({
@@ -114,7 +104,7 @@ DISPLAY RULES:
     system: SYSTEM_PROMPT + "\n\n" + dynamicSystem,
     messages: convertToModelMessages(messages),
     tools: {
-      webSearch, // we can disable this later if you want stricter behavior
+      webSearch,
       vectorDatabaseSearch,
     },
     stopWhen: stepCountIs(10),
@@ -127,5 +117,7 @@ DISPLAY RULES:
     },
   });
 
-  return result.toUIMessageStreamResponse({ sendReasoning: true });
+  return result.toUIMessageStreamResponse({
+    sendReasoning: true,
+  });
 }
